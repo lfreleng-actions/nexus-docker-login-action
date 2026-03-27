@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    timeout-minutes: 10 # Increase this timeout value as needed
+    timeout-minutes: 10
     steps:
       # Harden the runner used by this workflow
       # yamllint disable-line rule:line-length
@@ -37,7 +37,6 @@ jobs:
       - name: "Checkout repository"
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      # Perform setup prior to running test(s)
       - name: "Testing setup step"
         shell: bash
         run: |
@@ -45,31 +44,261 @@ jobs:
           echo "Testing setup step"
           echo "Testing setup step/summary output" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: "Running local action: ${{ github.repository }}"
+      # ----------------------------------------------------------------
+      # Test 1: Full login with fake credentials against an unreachable
+      # registry. Expect the action to fail when docker login itself
+      # fails (the anonymous port is attempted first).
+      # ----------------------------------------------------------------
+      - name: "Test 1: full inputs (expected failure)"
         uses: ./
+        id: full
+        continue-on-error: true
         with:
-          input: "test input 💬"
+          nexus3-registry: "nexus3.example.org"
+          nexus3-user: "test-user"
+          nexus3-password: "test-password"
+          dockerhub-user: "test-user"
+          dockerhub-password: "test-password"
 
-      - name: "Validated local action: ${{ github.repository }}"
+      - name: "Test 1: assert failure outcome"
         shell: bash
+        env:
+          OUTCOME: "${{ steps.full.outcome }}"
         run: |
-          # Local action validation
-          echo "Validated local action: ${{ github.repository }}"
-          echo "Validation step summary output" >> "$GITHUB_STEP_SUMMARY"
+          # Expect failure: credentials are fake and registry unreachable
+          echo "Test 1 outcome: ${OUTCOME}"
+          if [ "${OUTCOME}" != "failure" ]; then
+            msg="Expected Test 1 to fail with fake credentials,"
+            msg="${msg} got: ${OUTCOME}"
+            echo "::error::${msg}"
+            exit 1
+          fi
+          echo "Test 1: failed as expected ✅"
+          echo "- Test 1 (full inputs): failure ✅" \
+            >> "$GITHUB_STEP_SUMMARY"
 
-      # yamllint disable-line rule:line-length
-      - name: "Running local action: ${{ github.repository }} [Override Failure]"
+      # ----------------------------------------------------------------
+      # Test 2: Every input empty. Expect the action to fail loudly
+      # because no login can get performed at all.
+      # ----------------------------------------------------------------
+      - name: "Test 2: all inputs empty (expected failure)"
+        uses: ./
+        id: empty
+        continue-on-error: true
+        with:
+          nexus3-registry: ""
+          nexus3-user: ""
+          nexus3-password: ""
+          dockerhub-user: ""
+          dockerhub-password: ""
+
+      - name: "Test 2: assert failure outcome"
+        shell: bash
+        env:
+          OUTCOME: "${{ steps.empty.outcome }}"
+        run: |
+          # Expect failure: no usable configuration provided at all
+          echo "Test 2 outcome: ${OUTCOME}"
+          if [ "${OUTCOME}" != "failure" ]; then
+            msg="Expected Test 2 to fail when all inputs empty,"
+            msg="${msg} got: ${OUTCOME}"
+            echo "::error::${msg}"
+            exit 1
+          fi
+          echo "Test 2: failed as expected ✅"
+          echo "- Test 2 (all empty): failure ✅" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      # ----------------------------------------------------------------
+      # Test 3: nexus3-registry contains an embedded port. Expect the
+      # action to fail fast with a validation error from sanitisation.
+      # ----------------------------------------------------------------
+      - name: "Test 3: embedded port rejected (expected failure)"
+        uses: ./
+        id: embedded_port
+        continue-on-error: true
+        with:
+          nexus3-registry: "nexus3.example.org:10001"
+          nexus3-user: "test-user"
+          nexus3-password: "test-password"
+
+      - name: "Test 3: assert failure outcome"
+        shell: bash
+        env:
+          OUTCOME: "${{ steps.embedded_port.outcome }}"
+        run: |
+          # Expect failure: embedded port in nexus3-registry rejected
+          echo "Test 3 outcome: ${OUTCOME}"
+          if [ "${OUTCOME}" != "failure" ]; then
+            msg="Expected Test 3 to fail with embedded port,"
+            msg="${msg} got: ${OUTCOME}"
+            echo "::error::${msg}"
+            exit 1
+          fi
+          echo "Test 3: failed as expected ✅"
+          echo "- Test 3 (embedded port): failure ✅" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      # ----------------------------------------------------------------
+      # Test 4: nexus3-registry provided with an https:// scheme. Expect
+      # the action to sanitise the value and then fail on the unreachable
+      # registry. Verifies that sanitisation does not itself crash.
+      # ----------------------------------------------------------------
+      - name: "Test 4: scheme stripped (expected failure)"
+        uses: ./
+        id: scheme
+        continue-on-error: true
+        with:
+          nexus3-registry: "https://nexus3.example.org/"
+          nexus3-user: "test-user"
+          nexus3-password: "test-password"
+
+      - name: "Test 4: assert failure outcome"
+        shell: bash
+        env:
+          OUTCOME: "${{ steps.scheme.outcome }}"
+        run: |
+          # Expect failure: registry unreachable after sanitisation
+          echo "Test 4 outcome: ${OUTCOME}"
+          if [ "${OUTCOME}" != "failure" ]; then
+            msg="Expected Test 4 to fail after scheme sanitisation,"
+            msg="${msg} got: ${OUTCOME}"
+            echo "::error::${msg}"
+            exit 1
+          fi
+          echo "Test 4: failed as expected ✅"
+          echo "- Test 4 (scheme stripped): failure ✅" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      # ----------------------------------------------------------------
+      # Test 5: Override failure mode with an invalid registry hostname.
+      # Confirms the action does not crash on unresolvable hostnames.
+      # ----------------------------------------------------------------
+      - name: "Test 5: invalid registry hostname (expected failure)"
         uses: ./
         id: failure
         continue-on-error: true
         with:
-          invalid_input: "Some garbage"
+          nexus3-registry: "nexus3.invalid.example"
+          nexus3-user: "bad-user"
+          nexus3-password: "bad-password"
+          dockerhub-user: "bad-user"
+          dockerhub-password: "bad-password"
 
-      # Failure testing is also important
-      - name: "Error if step above did NOT fail"
-        if: steps.failure.outcome == 'success'
+      - name: "Test 5: assert failure outcome"
+        shell: bash
+        env:
+          OUTCOME: "${{ steps.failure.outcome }}"
+        run: |
+          # Expect failure: invalid registry hostname
+          echo "Test 5 outcome: ${OUTCOME}"
+          if [ "${OUTCOME}" != "failure" ]; then
+            msg="Expected Test 5 to fail with invalid hostname,"
+            msg="${msg} got: ${OUTCOME}"
+            echo "::error::${msg}"
+            exit 1
+          fi
+          echo "Test 5: failed as expected ✅"
+          echo "- Test 5 (invalid hostname): failure ✅" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      # ----------------------------------------------------------------
+      # Test 6: Positive path. Start a local Docker registry container
+      # on the runner with htpasswd basic auth using docker/docker,
+      # then run the action against localhost with that single port.
+      # Verify the action succeeds and the logged-in-registries output
+      # contains the expected registry entry.
+      # ----------------------------------------------------------------
+      - name: "Test 6: start local registry with basic auth"
+        shell: bash
+        env:
+          # Pin container images to immutable digests for reproducible
+          # CI behaviour and supply-chain safety. Update intentionally.
+          # httpd:2 (used only to generate an htpasswd file)
+          # yamllint disable-line rule:line-length
+          HTTPD_IMAGE: "httpd:2@sha256:b142cbf367baa33fec6cb10dfb77677b44010d2c03b8fc1125e788d673ae9e72"
+          # registry:2 (OCI distribution reference implementation)
+          # yamllint disable-line rule:line-length
+          REGISTRY_IMAGE: "registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
+        run: |
+          # Generate htpasswd file for user 'docker' / pass 'docker'
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/auth"
+          docker run --rm \
+            --entrypoint htpasswd \
+            "${HTTPD_IMAGE}" -Bbn docker docker \
+            > "${RUNNER_TEMP}/auth/htpasswd"
+          docker run -d \
+            --name local-registry \
+            -p 15001:5000 \
+            -v "${RUNNER_TEMP}/auth:/auth" \
+            -e "REGISTRY_AUTH=htpasswd" \
+            -e "REGISTRY_AUTH_HTPASSWD_REALM=Registry Realm" \
+            -e "REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd" \
+            "${REGISTRY_IMAGE}"
+          # Wait for the registry to accept connections. Fail loudly
+          # if it never becomes reachable so Test 6 does not produce
+          # a confusing downstream error.
+          ready=0
+          for i in $(seq 1 30); do
+            if curl -sSf -u docker:docker \
+                http://localhost:15001/v2/ >/dev/null 2>&1; then
+              echo "Local registry is ready after ${i}s"
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "${ready}" -ne 1 ]; then
+            msg="Local registry on localhost:15001 did not become"
+            msg="${msg} ready within 30s; aborting Test 6 setup"
+            echo "::error::${msg}"
+            docker logs local-registry || true
+            exit 1
+          fi
+
+      - name: "Test 6: positive login (expected success)"
+        uses: ./
+        id: positive
+        with:
+          nexus3-registry: "localhost"
+          nexus3-ports: "15001"
+          nexus3-user: "docker"
+          nexus3-password: "docker"
+
+      - name: "Test 6: assert success outcome and output"
+        shell: bash
+        env:
+          OUTCOME: "${{ steps.positive.outcome }}"
+          # Use bracket notation for the hyphenated output key to
+          # avoid any chance of it being parsed as subtraction in
+          # GitHub Actions expressions.
+          REGISTRIES: "${{ steps.positive.outputs['logged-in-registries'] }}"
+        run: |
+          set -euo pipefail
+          echo "Test 6 outcome: ${OUTCOME}"
+          echo "Test 6 logged-in-registries: ${REGISTRIES}"
+          if [ "${OUTCOME}" != "success" ]; then
+            msg="Expected Test 6 to succeed against local registry,"
+            msg="${msg} got: ${OUTCOME}"
+            echo "::error::${msg}"
+            exit 1
+          fi
+          case "${REGISTRIES}" in
+            *localhost:15001*) ;;
+            *)
+              msg="Expected logged-in-registries to contain"
+              msg="${msg} 'localhost:15001', got: ${REGISTRIES}"
+              echo "::error::${msg}"
+              exit 1
+              ;;
+          esac
+          echo "Test 6: succeeded as expected ✅"
+          echo "- Test 6 (local registry): success ✅" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "Test 6: cleanup local registry"
+        if: always()
         shell: bash
         run: |
-          # Error if step above did NOT fail
-          echo "Error: previous test step did NOT fail ❌"
-          exit 1
+          docker rm -f local-registry 2>/dev/null || true
