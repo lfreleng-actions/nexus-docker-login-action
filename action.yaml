@@ -1,37 +1,313 @@
 ---
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: 2025 The Linux Foundation
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
 
-# actions-template
-name: "🛠️ Actions Template"
-description: "Description of action"
-# Any relevant notes/observations can go here
+name: "nexus-docker-login"
+description: "Run docker login for all registries in Nexus3 and DockerHub"
 
+# All inputs are optional. The action logs into whichever targets have
+# sufficient configuration:
+#   * Nexus3 anonymous ports: require nexus3-registry only.
+#   * Nexus3 authenticated ports: also require nexus3-user and
+#     nexus3-password.
+#   * DockerHub: requires dockerhub-user and dockerhub-password.
+# Missing sections are skipped with a warning rather than failing the
+# step, so callers can wire inputs from org-level vars/secrets (e.g.
+# vars.NEXUS3_REGISTRY, secrets.NEXUS3_PASSWORD) and leave the rest
+# empty. The step only fails if no usable login can be performed at
+# all, or if an attempted login fails.
 inputs:
-  input:
-    description: "Description of input"
-    required: true
+  nexus3-registry:
+    # yamllint disable-line rule:line-length
+    description: "Nexus3 registry hostname (no scheme, no path, no port), e.g. nexus3.example.org"
+    required: false
+    default: ""
+  nexus3-user:
+    description: "Nexus3 organization username"
+    required: false
+    default: ""
+  nexus3-password:
+    description: "Nexus3 organization user's password"
+    required: false
+    default: ""
+  nexus3-ports:
+    # yamllint disable-line rule:line-length
+    description: "Comma-separated Nexus3 Docker registry ports; first entry is the anonymous port"
+    required: false
+    default: "10001,10002,10003,10004"
+  dockerhub-user:
+    description: "DockerHub organization username"
+    required: false
+    default: ""
+  dockerhub-password:
+    description: "DockerHub organization user's password"
+    required: false
+    default: ""
+  dockerhub-registry:
+    description: "DockerHub registry hostname"
+    required: false
+    default: "docker.io"
 
 outputs:
-  output:
-    description: "Description of output"
-    value: ${{ steps.code.outputs.output }}
+  logged-in-registries:
+    # yamllint disable-line rule:line-length
+    description: "Comma-separated list of registries successfully logged in to"
+    # yamllint disable-line rule:line-length
+    value: "${{ steps.nexus3_login.outputs['logged-in-registries'] }}"
 
 runs:
   using: "composite"
   steps:
-    - name: "Friendly Name"
-      id: code
+    - id: nexus3_login
+      name: "Log in to Nexus3 and DockerHub Docker registries"
       shell: bash
+      env:
+        NEXUS3_REGISTRY: "${{ inputs.nexus3-registry }}"
+        NEXUS3_USER: "${{ inputs.nexus3-user }}"
+        NEXUS3_PASSWORD: "${{ inputs.nexus3-password }}"
+        NEXUS3_PORTS: "${{ inputs.nexus3-ports }}"
+        DOCKERHUB_REGISTRY: "${{ inputs.dockerhub-registry }}"
+        DOCKERHUB_USER: "${{ inputs.dockerhub-user }}"
+        DOCKERHUB_PASSWORD: "${{ inputs.dockerhub-password }}"
       run: |
-        # Friendly Name
-        input="${{ inputs.input }}"
-        if [ -z "$input" ]; then
-          echo "Error: mandatory input was not set/configured ❌"
+        # Log in to each configured Nexus3 Docker registry port and,
+        # when credentials are available, to DockerHub. Sections with
+        # insufficient configuration are skipped with a warning.
+        #
+        # Nexus3 behaviour: the first entry in NEXUS3_PORTS is treated
+        # as the anonymous/public port and authenticates with the
+        # fixed 'docker'/'docker' credentials (Sonatype Nexus3
+        # convention). Remaining entries authenticate with
+        # NEXUS3_USER/NEXUS3_PASSWORD; they are skipped (with a
+        # warning) when either credential is empty.
+        set -euo pipefail
+
+        logged_in=()
+
+        # ------------------------------------------------------------
+        # escape_annotation: escape %, CR and LF for use in GitHub
+        # workflow command annotations (::warning::/::error::). This
+        # prevents a crafted input from breaking log formatting or
+        # enabling workflow-command injection when the message
+        # contains values derived from untrusted inputs.
+        # ------------------------------------------------------------
+        escape_annotation() {
+          local __s="$1"
+          __s="${__s//%/%25}"
+          __s="${__s//$'\r'/%0D}"
+          __s="${__s//$'\n'/%0A}"
+          printf '%s' "${__s}"
+        }
+
+        emit_warning() {
+          echo "::warning::$(escape_annotation "$1")"
+        }
+
+        emit_error() {
+          echo "::error::$(escape_annotation "$1")"
+        }
+
+        # ------------------------------------------------------------
+        # sanitise_registry: strip http(s):// scheme, any user[:pass]@
+        # userinfo, and any path component from a registry value. The
+        # sanitised hostname is written to the variable named by the
+        # first argument; the second argument is the input's label
+        # (e.g. "nexus3-registry") used for log messages. When
+        # userinfo was present the original value is NEVER logged so
+        # accidentally embedded credentials do not leak. The function
+        # fails (non-zero exit) when sanitisation produces an empty
+        # hostname from a non-empty input, so callers can detect a
+        # misconfiguration like "https://" or "/only/a/path".
+        # ------------------------------------------------------------
+        sanitise_registry() {
+          local __var="$1"
+          local __label="$2"
+          local __val="${!__var}"
+          local __before="${__val}"
+          local __had_userinfo=0
+          # Strip http(s):// prefix
+          __val="${__val#http://}"
+          __val="${__val#https://}"
+          # Strip userinfo. Use ##*@ to remove up to the LAST '@' so
+          # that pathological inputs such as 'user@sub@host' collapse
+          # to 'host' rather than leaving an '@' behind.
+          case "${__val}" in
+            *@*)
+              __had_userinfo=1
+              __val="${__val##*@}"
+              ;;
+          esac
+          # Strip any path component
+          __val="${__val%%/*}"
+          # Assign sanitised value back to caller's variable
+          printf -v "${__var}" '%s' "${__val}"
+          if [ "${__had_userinfo}" -eq 1 ]; then
+            local __msg
+            __msg="${__label} contained embedded credentials;"
+            __msg="${__msg} stripped before use (value not logged)"
+            emit_warning "${__msg}"
+          elif [ "${__before}" != "${__val}" ]; then
+            # Safe to log: no userinfo was present, so the sanitised
+            # value cannot contain secrets.
+            local __msg
+            __msg="Sanitised ${__label} to hostname only:"
+            __msg="${__msg} '${__val}'"
+            emit_warning "${__msg}"
+          fi
+          # Fail fast when sanitisation turned a non-empty input into
+          # an empty hostname (e.g. 'https://' or '/only/a/path').
+          if [ -n "${__before}" ] && [ -z "${__val}" ]; then
+            local __msg
+            __msg="${__label} resolved to an empty hostname after"
+            __msg="${__msg} sanitisation; check the input value"
+            emit_error "${__msg}"
+            return 1
+          fi
+        }
+
+        # ------------------------------------------------------------
+        # Sanitise nexus3-registry: strip scheme, userinfo, and path;
+        # reject embedded :PORT because ports come from nexus3-ports.
+        # ------------------------------------------------------------
+        if [ -n "${NEXUS3_REGISTRY}" ]; then
+          if ! sanitise_registry NEXUS3_REGISTRY "nexus3-registry"; then
+            exit 1
+          fi
+          # Reject embedded port; ports come from nexus3-ports
+          case "${NEXUS3_REGISTRY}" in
+            *:*)
+              msg="nexus3-registry must not include a port;"
+              msg="${msg} use the nexus3-ports input instead"
+              emit_error "${msg}"
+              exit 1
+              ;;
+          esac
+        fi
+
+        # ------------------------------------------------------------
+        # Sanitise dockerhub-registry the same way (scheme, userinfo,
+        # and path stripped). DockerHub entries have no port appended,
+        # so we do not reject an embedded port here -- but if one is
+        # present, docker login will surface the error itself.
+        # ------------------------------------------------------------
+        if [ -n "${DOCKERHUB_REGISTRY}" ]; then
+          if ! sanitise_registry DOCKERHUB_REGISTRY \
+              "dockerhub-registry"; then
+            exit 1
+          fi
+        fi
+
+        # ------------------------------------------------------------
+        # Nexus3 logins
+        # ------------------------------------------------------------
+        if [ -z "${NEXUS3_REGISTRY}" ]; then
+          emit_warning "nexus3-registry empty; skipping Nexus3 logins"
+        elif [ -z "${NEXUS3_PORTS}" ]; then
+          emit_warning "nexus3-ports empty; skipping Nexus3 logins"
+        else
+          IFS=',' read -r -a ports <<< "${NEXUS3_PORTS}"
+          first=1
+          nexus3_attempted=0
+          nexus3_valid_ports=0
+          for port in "${ports[@]}"; do
+            nexus3_attempted=1
+            # Trim whitespace
+            port="${port//[[:space:]]/}"
+            if [ -z "${port}" ]; then
+              continue
+            fi
+            # Basic numeric validation
+            case "${port}" in
+              *[!0-9]*|"")
+                msg="Invalid port '${port}' in nexus3-ports; skipping"
+                emit_warning "${msg}"
+                continue
+                ;;
+            esac
+            nexus3_valid_ports=$((nexus3_valid_ports + 1))
+
+            registry="${NEXUS3_REGISTRY}:${port}"
+            if [ "${first}" -eq 1 ]; then
+              first=0
+              echo "Logging in to ${registry} (anonymous)"
+              if echo "docker" | docker login \
+                  --username "docker" \
+                  --password-stdin "${registry}"; then
+                logged_in+=("${registry}")
+              else
+                msg="Anonymous login to ${registry} failed"
+                emit_error "${msg}"
+                exit 1
+              fi
+            else
+              if [ -z "${NEXUS3_USER}" ] || \
+                 [ -z "${NEXUS3_PASSWORD}" ]; then
+                msg="Skipping ${registry}: nexus3-user or"
+                msg="${msg} nexus3-password not provided"
+                emit_warning "${msg}"
+                continue
+              fi
+              echo "Logging in to ${registry}"
+              if printf '%s' "${NEXUS3_PASSWORD}" | docker login \
+                  --username "${NEXUS3_USER}" \
+                  --password-stdin "${registry}"; then
+                logged_in+=("${registry}")
+              else
+                msg="Authenticated login to ${registry} failed"
+                emit_error "${msg}"
+                exit 1
+              fi
+            fi
+          done
+          if [ "${nexus3_attempted}" -eq 1 ] && \
+             [ "${nexus3_valid_ports}" -eq 0 ]; then
+            msg="nexus3-registry set but nexus3-ports contained no"
+            msg="${msg} valid numeric entries; check the nexus3-ports"
+            msg="${msg} input"
+            emit_warning "${msg}"
+          fi
+        fi
+
+        # ------------------------------------------------------------
+        # DockerHub login
+        # ------------------------------------------------------------
+        if [ -z "${DOCKERHUB_USER}" ] || \
+           [ -z "${DOCKERHUB_PASSWORD}" ]; then
+          msg="DockerHub credentials not provided;"
+          msg="${msg} skipping DockerHub login"
+          emit_warning "${msg}"
+        else
+          dh_registry="${DOCKERHUB_REGISTRY:-docker.io}"
+          echo "Logging in to ${dh_registry}"
+          if printf '%s' "${DOCKERHUB_PASSWORD}" | docker login \
+              --username "${DOCKERHUB_USER}" \
+              --password-stdin "${dh_registry}"; then
+            logged_in+=("${dh_registry}")
+          else
+            emit_error "DockerHub login to ${dh_registry} failed"
+            exit 1
+          fi
+        fi
+
+        # ------------------------------------------------------------
+        # Summary / output
+        # ------------------------------------------------------------
+        if [ "${#logged_in[@]}" -eq 0 ]; then
+          msg="No registry logins performed. Provide nexus3-registry"
+          msg="${msg} with at least one valid entry in nexus3-ports,"
+          msg="${msg} and/or dockerhub-user plus dockerhub-password."
+          emit_error "${msg}"
           exit 1
         fi
 
-        echo "output=$input" >> "$GITHUB_ENV"
-        echo "output=$input" >> "$GITHUB_OUTPUT"
-        echo "Action received: $input ✅"
-        echo "Action received: $input ✅" >> "$GITHUB_STEP_SUMMARY"
+        joined="$(IFS=','; echo "${logged_in[*]}")"
+        echo "Logged in to: ${joined}"
+        echo "logged-in-registries=${joined}" >> "${GITHUB_OUTPUT}"
+        {
+          echo "### Nexus Docker Login"
+          echo ""
+          echo "Logged in to the following registries:"
+          for r in "${logged_in[@]}"; do
+            echo "- \`${r}\`"
+          done
+        } >> "${GITHUB_STEP_SUMMARY}"
