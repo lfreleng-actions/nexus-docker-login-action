@@ -39,11 +39,6 @@ jobs:
         with:
           egress-policy: audit
 
-      - name: "Checkout repository"
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
       - name: "Testing setup step"
         shell: bash
         run: |
@@ -57,7 +52,7 @@ jobs:
       # fails (the anonymous port is attempted first).
       # ----------------------------------------------------------------
       - name: "Test 1: full inputs (expected failure)"
-        uses: ./
+        uses: $/
         id: full
         continue-on-error: true
         with:
@@ -89,7 +84,7 @@ jobs:
       # because no login can get performed at all.
       # ----------------------------------------------------------------
       - name: "Test 2: all inputs empty (expected failure)"
-        uses: ./
+        uses: $/
         id: empty
         continue-on-error: true
         with:
@@ -121,7 +116,7 @@ jobs:
       # action to fail fast with a validation error from sanitisation.
       # ----------------------------------------------------------------
       - name: "Test 3: embedded port rejected (expected failure)"
-        uses: ./
+        uses: $/
         id: embedded_port
         continue-on-error: true
         with:
@@ -152,7 +147,7 @@ jobs:
       # registry. Verifies that sanitisation does not itself crash.
       # ----------------------------------------------------------------
       - name: "Test 4: scheme stripped (expected failure)"
-        uses: ./
+        uses: $/
         id: scheme
         continue-on-error: true
         with:
@@ -182,7 +177,7 @@ jobs:
       # Confirms the action does not crash on unresolvable hostnames.
       # ----------------------------------------------------------------
       - name: "Test 5: invalid registry hostname (expected failure)"
-        uses: ./
+        uses: $/
         id: failure
         continue-on-error: true
         with:
@@ -265,7 +260,7 @@ jobs:
           fi
 
       - name: "Test 6: positive login (expected success)"
-        uses: ./
+        uses: $/
         id: positive
         with:
           nexus3-registry: "localhost"
