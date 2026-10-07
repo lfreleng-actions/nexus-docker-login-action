@@ -54,6 +54,10 @@ outputs:
     description: "Comma-separated list of registries successfully logged in to"
     # yamllint disable-line rule:line-length
     value: "${{ steps.nexus3_login.outputs['logged-in-registries'] }}"
+  failure-reason:
+    # yamllint disable-line rule:line-length
+    description: "Short code naming why the action failed; empty on success"
+    value: "${{ steps.nexus3_login.outputs['failure-reason'] }}"
 
 runs:
   using: "composite"
@@ -108,15 +112,27 @@ runs:
         }
 
         # ------------------------------------------------------------
+        # fail: report an error and stop. The first argument is a fixed
+        # reason code, published as the failure-reason output so that
+        # callers and tests can tell failure modes apart; the second is
+        # the human-readable message.
+        # ------------------------------------------------------------
+        fail() {
+          emit_error "$2"
+          echo "failure-reason=$1" >> "${GITHUB_OUTPUT}"
+          exit 1
+        }
+
+        # ------------------------------------------------------------
         # sanitise_registry: strip http(s):// scheme, any user[:pass]@
         # userinfo, and any path component from a registry value. The
         # sanitised hostname is written to the variable named by the
         # first argument; the second argument is the input's label
         # (e.g. "nexus3-registry") used for log messages. When
         # userinfo was present the original value is NEVER logged so
-        # accidentally embedded credentials do not leak. The function
-        # fails (non-zero exit) when sanitisation produces an empty
-        # hostname from a non-empty input, so callers can detect a
+        # accidentally embedded credentials do not leak. The action
+        # fails with reason 'empty-hostname' when sanitisation produces
+        # an empty hostname from a non-empty input, which catches a
         # misconfiguration like "https://" or "/only/a/path".
         # ------------------------------------------------------------
         sanitise_registry() {
@@ -160,8 +176,7 @@ runs:
             local __msg
             __msg="${__label} resolved to an empty hostname after"
             __msg="${__msg} sanitisation; check the input value"
-            emit_error "${__msg}"
-            return 1
+            fail empty-hostname "${__msg}"
           fi
         }
 
@@ -170,16 +185,13 @@ runs:
         # reject embedded :PORT because ports come from nexus3-ports.
         # ------------------------------------------------------------
         if [ -n "${NEXUS3_REGISTRY}" ]; then
-          if ! sanitise_registry NEXUS3_REGISTRY "nexus3-registry"; then
-            exit 1
-          fi
+          sanitise_registry NEXUS3_REGISTRY "nexus3-registry"
           # Reject embedded port; ports come from nexus3-ports
           case "${NEXUS3_REGISTRY}" in
             *:*)
               msg="nexus3-registry must not include a port;"
               msg="${msg} use the nexus3-ports input instead"
-              emit_error "${msg}"
-              exit 1
+              fail embedded-port "${msg}"
               ;;
           esac
         fi
@@ -191,10 +203,7 @@ runs:
         # present, docker login will surface the error itself.
         # ------------------------------------------------------------
         if [ -n "${DOCKERHUB_REGISTRY}" ]; then
-          if ! sanitise_registry DOCKERHUB_REGISTRY \
-              "dockerhub-registry"; then
-            exit 1
-          fi
+          sanitise_registry DOCKERHUB_REGISTRY "dockerhub-registry"
         fi
 
         # ------------------------------------------------------------
@@ -236,8 +245,7 @@ runs:
                 logged_in+=("${registry}")
               else
                 msg="Anonymous login to ${registry} failed"
-                emit_error "${msg}"
-                exit 1
+                fail anonymous-login-failed "${msg}"
               fi
             else
               if [ -z "${NEXUS3_USER}" ] || \
@@ -254,8 +262,7 @@ runs:
                 logged_in+=("${registry}")
               else
                 msg="Authenticated login to ${registry} failed"
-                emit_error "${msg}"
-                exit 1
+                fail authenticated-login-failed "${msg}"
               fi
             fi
           done
@@ -284,8 +291,8 @@ runs:
               --password-stdin "${dh_registry}"; then
             logged_in+=("${dh_registry}")
           else
-            emit_error "DockerHub login to ${dh_registry} failed"
-            exit 1
+            msg="DockerHub login to ${dh_registry} failed"
+            fail dockerhub-login-failed "${msg}"
           fi
         fi
 
@@ -296,8 +303,7 @@ runs:
           msg="No registry logins performed. Provide nexus3-registry"
           msg="${msg} with at least one valid entry in nexus3-ports,"
           msg="${msg} and/or dockerhub-user plus dockerhub-password."
-          emit_error "${msg}"
-          exit 1
+          fail no-logins "${msg}"
         fi
 
         joined="$(IFS=','; echo "${logged_in[*]}")"

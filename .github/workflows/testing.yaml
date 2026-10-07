@@ -47,9 +47,15 @@ jobs:
           echo "Testing setup step/summary output" >> "$GITHUB_STEP_SUMMARY"
 
       # ----------------------------------------------------------------
-      # Test 1: Full login with fake credentials against an unreachable
-      # registry. Expect the action to fail when docker login itself
-      # fails (the anonymous port is attempted first).
+      # Negative tests. Each asserts both that the action failed and,
+      # through the failure-reason output, why it failed, so that an
+      # unrelated failure cannot satisfy the test.
+      # ----------------------------------------------------------------
+
+      # ----------------------------------------------------------------
+      # Test 1: Full inputs with fake credentials against an unreachable
+      # registry. The anonymous Nexus3 port is attempted first, so the
+      # action stops there before any authenticated or DockerHub login.
       # ----------------------------------------------------------------
       - name: "Test 1: full inputs (expected failure)"
         uses: $/
@@ -62,21 +68,24 @@ jobs:
           dockerhub-user: "test-user"
           dockerhub-password: "test-password"
 
-      - name: "Test 1: assert failure outcome"
+      - name: "Test 1: assert anonymous-login-failed"
         shell: bash
         env:
           OUTCOME: "${{ steps.full.outcome }}"
+          REASON: "${{ steps.full.outputs['failure-reason'] }}"
+          EXPECTED: "anonymous-login-failed"
         run: |
-          # Expect failure: credentials are fake and registry unreachable
-          echo "Test 1 outcome: ${OUTCOME}"
-          if [ "${OUTCOME}" != "failure" ]; then
-            msg="Expected Test 1 to fail with fake credentials,"
-            msg="${msg} got: ${OUTCOME}"
+          # Expect failure at the anonymous Nexus3 port
+          echo "Test 1 outcome: ${OUTCOME}, reason: ${REASON}"
+          if [ "${OUTCOME}" != "failure" ] || \
+             [ "${REASON}" != "${EXPECTED}" ]; then
+            msg="Expected Test 1 to fail with ${EXPECTED},"
+            msg="${msg} got: ${OUTCOME} (${REASON:-no reason})"
             echo "::error::${msg}"
             exit 1
           fi
           echo "Test 1: failed as expected ✅"
-          echo "- Test 1 (full inputs): failure ✅" \
+          echo "- Test 1 (full inputs): ${EXPECTED} ✅" \
             >> "$GITHUB_STEP_SUMMARY"
 
       # ----------------------------------------------------------------
@@ -94,21 +103,24 @@ jobs:
           dockerhub-user: ""
           dockerhub-password: ""
 
-      - name: "Test 2: assert failure outcome"
+      - name: "Test 2: assert no-logins"
         shell: bash
         env:
           OUTCOME: "${{ steps.empty.outcome }}"
+          REASON: "${{ steps.empty.outputs['failure-reason'] }}"
+          EXPECTED: "no-logins"
         run: |
           # Expect failure: no usable configuration provided at all
-          echo "Test 2 outcome: ${OUTCOME}"
-          if [ "${OUTCOME}" != "failure" ]; then
-            msg="Expected Test 2 to fail when all inputs empty,"
-            msg="${msg} got: ${OUTCOME}"
+          echo "Test 2 outcome: ${OUTCOME}, reason: ${REASON}"
+          if [ "${OUTCOME}" != "failure" ] || \
+             [ "${REASON}" != "${EXPECTED}" ]; then
+            msg="Expected Test 2 to fail with ${EXPECTED},"
+            msg="${msg} got: ${OUTCOME} (${REASON:-no reason})"
             echo "::error::${msg}"
             exit 1
           fi
           echo "Test 2: failed as expected ✅"
-          echo "- Test 2 (all empty): failure ✅" \
+          echo "- Test 2 (all empty): ${EXPECTED} ✅" \
             >> "$GITHUB_STEP_SUMMARY"
 
       # ----------------------------------------------------------------
@@ -124,27 +136,31 @@ jobs:
           nexus3-user: "test-user"
           nexus3-password: "test-password"
 
-      - name: "Test 3: assert failure outcome"
+      - name: "Test 3: assert embedded-port"
         shell: bash
         env:
           OUTCOME: "${{ steps.embedded_port.outcome }}"
+          REASON: "${{ steps.embedded_port.outputs['failure-reason'] }}"
+          EXPECTED: "embedded-port"
         run: |
           # Expect failure: embedded port in nexus3-registry rejected
-          echo "Test 3 outcome: ${OUTCOME}"
-          if [ "${OUTCOME}" != "failure" ]; then
-            msg="Expected Test 3 to fail with embedded port,"
-            msg="${msg} got: ${OUTCOME}"
+          echo "Test 3 outcome: ${OUTCOME}, reason: ${REASON}"
+          if [ "${OUTCOME}" != "failure" ] || \
+             [ "${REASON}" != "${EXPECTED}" ]; then
+            msg="Expected Test 3 to fail with ${EXPECTED},"
+            msg="${msg} got: ${OUTCOME} (${REASON:-no reason})"
             echo "::error::${msg}"
             exit 1
           fi
           echo "Test 3: failed as expected ✅"
-          echo "- Test 3 (embedded port): failure ✅" \
+          echo "- Test 3 (embedded port): ${EXPECTED} ✅" \
             >> "$GITHUB_STEP_SUMMARY"
 
       # ----------------------------------------------------------------
-      # Test 4: nexus3-registry provided with an https:// scheme. Expect
-      # the action to sanitise the value and then fail on the unreachable
-      # registry. Verifies that sanitisation does not itself crash.
+      # Test 4: nexus3-registry provided with an https:// scheme and a
+      # trailing path. Expect the action to sanitise the value and then
+      # fail at the anonymous login to the unreachable registry; that
+      # reason shows sanitisation completed rather than failing itself.
       # ----------------------------------------------------------------
       - name: "Test 4: scheme stripped (expected failure)"
         uses: $/
@@ -155,53 +171,60 @@ jobs:
           nexus3-user: "test-user"
           nexus3-password: "test-password"
 
-      - name: "Test 4: assert failure outcome"
+      - name: "Test 4: assert anonymous-login-failed"
         shell: bash
         env:
           OUTCOME: "${{ steps.scheme.outcome }}"
+          REASON: "${{ steps.scheme.outputs['failure-reason'] }}"
+          EXPECTED: "anonymous-login-failed"
         run: |
           # Expect failure: registry unreachable after sanitisation
-          echo "Test 4 outcome: ${OUTCOME}"
-          if [ "${OUTCOME}" != "failure" ]; then
-            msg="Expected Test 4 to fail after scheme sanitisation,"
-            msg="${msg} got: ${OUTCOME}"
+          echo "Test 4 outcome: ${OUTCOME}, reason: ${REASON}"
+          if [ "${OUTCOME}" != "failure" ] || \
+             [ "${REASON}" != "${EXPECTED}" ]; then
+            msg="Expected Test 4 to fail with ${EXPECTED},"
+            msg="${msg} got: ${OUTCOME} (${REASON:-no reason})"
             echo "::error::${msg}"
             exit 1
           fi
           echo "Test 4: failed as expected ✅"
-          echo "- Test 4 (scheme stripped): failure ✅" \
+          echo "- Test 4 (scheme stripped): ${EXPECTED} ✅" \
             >> "$GITHUB_STEP_SUMMARY"
 
       # ----------------------------------------------------------------
-      # Test 5: Override failure mode with an invalid registry hostname.
-      # Confirms the action does not crash on unresolvable hostnames.
+      # Test 5: DockerHub credentials without nexus3-registry, so the
+      # Nexus3 section is skipped and the DockerHub login runs. The
+      # registry is overridden with a reserved '.invalid' hostname
+      # (RFC 2606), which never resolves, so the test does not send
+      # fake credentials to the real DockerHub.
       # ----------------------------------------------------------------
-      - name: "Test 5: invalid registry hostname (expected failure)"
+      - name: "Test 5: DockerHub login failure (expected failure)"
         uses: $/
-        id: failure
+        id: dockerhub
         continue-on-error: true
         with:
-          nexus3-registry: "nexus3.invalid.example"
-          nexus3-user: "bad-user"
-          nexus3-password: "bad-password"
           dockerhub-user: "bad-user"
           dockerhub-password: "bad-password"
+          dockerhub-registry: "registry.invalid"
 
-      - name: "Test 5: assert failure outcome"
+      - name: "Test 5: assert dockerhub-login-failed"
         shell: bash
         env:
-          OUTCOME: "${{ steps.failure.outcome }}"
+          OUTCOME: "${{ steps.dockerhub.outcome }}"
+          REASON: "${{ steps.dockerhub.outputs['failure-reason'] }}"
+          EXPECTED: "dockerhub-login-failed"
         run: |
-          # Expect failure: invalid registry hostname
-          echo "Test 5 outcome: ${OUTCOME}"
-          if [ "${OUTCOME}" != "failure" ]; then
-            msg="Expected Test 5 to fail with invalid hostname,"
-            msg="${msg} got: ${OUTCOME}"
+          # Expect failure at the DockerHub login
+          echo "Test 5 outcome: ${OUTCOME}, reason: ${REASON}"
+          if [ "${OUTCOME}" != "failure" ] || \
+             [ "${REASON}" != "${EXPECTED}" ]; then
+            msg="Expected Test 5 to fail with ${EXPECTED},"
+            msg="${msg} got: ${OUTCOME} (${REASON:-no reason})"
             echo "::error::${msg}"
             exit 1
           fi
           echo "Test 5: failed as expected ✅"
-          echo "- Test 5 (invalid hostname): failure ✅" \
+          echo "- Test 5 (DockerHub login): ${EXPECTED} ✅" \
             >> "$GITHUB_STEP_SUMMARY"
 
       # ----------------------------------------------------------------
@@ -276,6 +299,7 @@ jobs:
           # avoid any chance of it being parsed as subtraction in
           # GitHub Actions expressions.
           REGISTRIES: "${{ steps.positive.outputs['logged-in-registries'] }}"
+          REASON: "${{ steps.positive.outputs['failure-reason'] }}"
         run: |
           set -euo pipefail
           echo "Test 6 outcome: ${OUTCOME}"
@@ -283,6 +307,12 @@ jobs:
           if [ "${OUTCOME}" != "success" ]; then
             msg="Expected Test 6 to succeed against local registry,"
             msg="${msg} got: ${OUTCOME}"
+            echo "::error::${msg}"
+            exit 1
+          fi
+          if [ -n "${REASON}" ]; then
+            msg="Expected no failure-reason on success,"
+            msg="${msg} got: ${REASON}"
             echo "::error::${msg}"
             exit 1
           fi
@@ -299,7 +329,74 @@ jobs:
           echo "- Test 6 (local registry): success ✅" \
             >> "$GITHUB_STEP_SUMMARY"
 
-      - name: "Test 6: cleanup local registry"
+      # ----------------------------------------------------------------
+      # Test 7: Authenticated Nexus3 port with a wrong password. The
+      # local registry serves both entries in nexus3-ports: the first
+      # (anonymous, docker/docker) login succeeds, so the action reaches
+      # the authenticated login, which the registry rejects.
+      # ----------------------------------------------------------------
+      - name: "Test 7: authenticated login failure (expected failure)"
+        uses: $/
+        id: authenticated
+        continue-on-error: true
+        with:
+          nexus3-registry: "localhost"
+          nexus3-ports: "15001,15001"
+          nexus3-user: "docker"
+          nexus3-password: "wrong-password"
+
+      - name: "Test 7: assert authenticated-login-failed"
+        shell: bash
+        env:
+          OUTCOME: "${{ steps.authenticated.outcome }}"
+          REASON: "${{ steps.authenticated.outputs['failure-reason'] }}"
+          EXPECTED: "authenticated-login-failed"
+        run: |
+          # Expect failure at the authenticated Nexus3 port
+          echo "Test 7 outcome: ${OUTCOME}, reason: ${REASON}"
+          if [ "${OUTCOME}" != "failure" ] || \
+             [ "${REASON}" != "${EXPECTED}" ]; then
+            msg="Expected Test 7 to fail with ${EXPECTED},"
+            msg="${msg} got: ${OUTCOME} (${REASON:-no reason})"
+            echo "::error::${msg}"
+            exit 1
+          fi
+          echo "Test 7: failed as expected ✅"
+          echo "- Test 7 (authenticated port): ${EXPECTED} ✅" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      # ----------------------------------------------------------------
+      # Test 8: nexus3-registry with a scheme and nothing else. Expect
+      # the action to reject the empty hostname left by sanitisation.
+      # ----------------------------------------------------------------
+      - name: "Test 8: empty hostname rejected (expected failure)"
+        uses: $/
+        id: empty_hostname
+        continue-on-error: true
+        with:
+          nexus3-registry: "https://"
+
+      - name: "Test 8: assert empty-hostname"
+        shell: bash
+        env:
+          OUTCOME: "${{ steps.empty_hostname.outcome }}"
+          REASON: "${{ steps.empty_hostname.outputs['failure-reason'] }}"
+          EXPECTED: "empty-hostname"
+        run: |
+          # Expect failure: sanitisation left no hostname
+          echo "Test 8 outcome: ${OUTCOME}, reason: ${REASON}"
+          if [ "${OUTCOME}" != "failure" ] || \
+             [ "${REASON}" != "${EXPECTED}" ]; then
+            msg="Expected Test 8 to fail with ${EXPECTED},"
+            msg="${msg} got: ${OUTCOME} (${REASON:-no reason})"
+            echo "::error::${msg}"
+            exit 1
+          fi
+          echo "Test 8: failed as expected ✅"
+          echo "- Test 8 (empty hostname): ${EXPECTED} ✅" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "Cleanup local registry"
         if: always()
         shell: bash
         run: |
