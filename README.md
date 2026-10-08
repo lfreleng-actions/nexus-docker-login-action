@@ -97,6 +97,25 @@ steps:
 | Name                 | Description                                                                                                                                                 |
 | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | logged-in-registries | Comma-separated list of registries logged in to. Nexus3 entries take the form `host:port`; the DockerHub entry is a bare `host` (no port, e.g. `docker.io`) |
+| failure-reason       | Short code naming why the action failed, empty on success. See [Failure reasons](#failure-reasons)                                                          |
+
+<!-- markdownlint-enable MD013 -->
+
+### Failure reasons
+
+The action writes `failure-reason` before it fails, so a caller that
+sets `continue-on-error: true` can branch on the cause:
+
+<!-- markdownlint-disable MD013 -->
+
+| Code                       | Cause                                                                              |
+| -------------------------- | ---------------------------------------------------------------------------------- |
+| empty-hostname             | `nexus3-registry` or `dockerhub-registry` held no hostname once sanitised          |
+| embedded-port              | `nexus3-registry` included a `:port`; supply ports through `nexus3-ports` instead  |
+| anonymous-login-failed     | Login to the anonymous Nexus3 port (first entry in `nexus3-ports`) failed          |
+| authenticated-login-failed | Login to an authenticated Nexus3 port failed                                       |
+| dockerhub-login-failed     | Login to `dockerhub-registry` failed                                               |
+| no-logins                  | The inputs left nothing to log in to                                               |
 
 <!-- markdownlint-enable MD013 -->
 
